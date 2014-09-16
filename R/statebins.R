@@ -38,6 +38,7 @@ invert <- function(hexColor, darkColor="black", lightColor="white") {
 
 }
 
+
 #' Create a new ggplot-based "statebin" chart for USA states (discrete scale)
 #'
 #' \code{statebins()} creates "statebin" charts in the style of \url{http://bit.ly/statebins}
@@ -74,6 +75,8 @@ invert <- function(hexColor, darkColor="black", lightColor="white") {
 #' @param brewer_pal which named \link{RColorBrewer} palette to use (defaults to "PuBu")
 #' @param plot_title title for the plot
 #' @param title_position where to put the title ("\code{bottom}" or "\code{top}" or "" for none); if "\code{bottom}", you get back a grob vs a ggplot object
+#' @param state_shape shape of states, defaults to "\code{square}"; any other value will make circles
+#' @param alaska_position_north if TRUE, places alaska at top-left of map; if FALSE (default) keeps Alaska near Hawaii
 #' @return ggplot2 object or grob
 #' @export
 #' @examples
@@ -83,11 +86,13 @@ invert <- function(hexColor, darkColor="black", lightColor="white") {
 #' statebins(USArrests, value_col="Assault", text_color="black", font_size=3,
 #'           legend_title = "Assault", legend_position="bottom")
 #' }
+
 statebins <- function(state_data, state_col="state", value_col="value",
-                     text_color="black", font_size=3,
+                     text_color="black", font_size=12,
                      state_border_col="white", breaks=5, labels=1:5,
                      legend_title="Legend", legend_position="top",
-                     brewer_pal="PuBu", plot_title="", title_position="bottom") {
+                     brewer_pal="PuBu", plot_title="", title_position="bottom",
+                     state_shape="square", alaska_position_north=FALSE) {
 
   stopifnot(breaks > 0 && breaks < 10)
   stopifnot(title_position %in% c("", "top", "bottom"))
@@ -102,17 +107,65 @@ statebins <- function(state_data, state_col="state", value_col="value",
   stopifnot(state_data[,state_col] %in% state_coords[,merge.x])
   stopifnot(!any(duplicated(state_data[,state_col])))
 
-  st.dat <- merge(state_coords, state_data, by.x=merge.x, by.y=state_col)
+  #Move alaska to top-left corner of map if TRUE
+  if (alaska_position_north == TRUE){
+    state_coords[ state_coords$abbrev == "AK", "row"] <- 1L
+  }
+
+  # generates a polygon with n-1 sides centered around each state's coordinate
+  # this appears to be easier than creating a pointsGrob with size relative to axis units...
+  # based on circle function from here:
+  # http://stackoverflow.com/questions/23908147/geom-point-control-radius-exactly-rather-than-scaling-it
+  ngon_states <- function(df, n=360){
+    angle <- seq(-pi, pi, length = n)
+      make_circle <- function(col,row,abbrev, state){
+        data.frame(col=col+0.5*cos(angle), row=row+0.5*sin(angle),  abbrev, state, stringsAsFactors=FALSE)
+      }
+    lmat <- mapply(make_circle, abbrev=df$abbrev, state=df$state,
+                col = df$col, row=df$row, SIMPLIFY = FALSE)
+    do.call(rbind, lmat)
+  }
+
+
+
+  if (state_shape=="circle") {
+    state_coords_circ <- ngon_states(state_coords)
+    st.dat <- merge(state_coords_circ, state_data, by.x=merge.x, by.y=state_col)
+  } else if (state_shape=="hexagon"){
+    #manually adjust midwestern states, because they look weird otherwise
+    state_coords[ state_coords$col==7,"row"]<-state_coords[ state_coords$col==7,"row"]+1
+    #creates offset, so hexes appear inter-locking
+    state_coords$row <- ifelse(state_coords$col %% 2 == 1, state_coords$row -0.5, state_coords$row)
+    # additional adjustment (using geometry!) to make the hexes touch:
+    state_coords$row <- state_coords$row - (0.5-sqrt(.25-.25*.25))*state_coords$row*2
+    # horizontal adjustment so they are inter-locking
+    state_coords$col <- state_coords$col - 0.25 * state_coords$col
+    # number of points is 6+1 (first and last pt are same)
+    state_coords_hex <- ngon_states(state_coords, n=7)
+    st.dat <- merge(state_coords_hex, state_data, by.x=merge.x, by.y=state_col)
+  }  else {
+    st.dat <- merge(state_coords, state_data, by.x=merge.x, by.y=state_col)
+  }
+
 
   st.dat$fill_color <- cut(st.dat[, value_col], breaks=breaks, labels=labels)
 
+#Plot begins
   gg <- ggplot(st.dat, aes_string(x="col", y="row", label="abbrev"))
+
+  if (state_shape=="square"){
   gg <- gg + geom_tile(aes_string(fill="fill_color"))
   gg <- gg + geom_tile(color=state_border_col, aes_string(fill="fill_color"), size=2, show_guide=FALSE)
-  gg <- gg + geom_text(color=text_color, size=font_size)
+  } else {
+  gg <- gg + geom_polygon(aes_string(group="abbrev", fill="fill_color"))
+  gg <- gg + geom_polygon(aes_string(group="abbrev"), fill=NA, colour=state_border_col, size=0.8) + guides( colour = FALSE)
+  }
+
+  # geom_text references original state_coords df, in case circle
+  gg <- gg + geom_text(data=state_coords,color=text_color, size=font_size )
   gg <- gg + scale_y_reverse()
   gg <- gg + scale_fill_brewer(palette=brewer_pal, name=legend_title)
-  gg <- gg + coord_equal()
+  gg <- gg + coord_equal(ratio=1)
   gg <- gg + labs(x=NULL, y=NULL, title=NULL)
   gg <- gg + theme_bw()
   gg <- gg + theme(legend.position=legend_position)
